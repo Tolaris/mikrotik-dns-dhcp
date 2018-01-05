@@ -6,16 +6,40 @@
 # Set the first two variables according to your installation.
 :local dhcpserver "dhcp1"
 :local zone "home.example.com"
+:local cmnt "autoaded"
+
+# Removes an unprintable characters from string
+:local myStrip do={
+
+# TODO: This part doesn't work. Fix pls
+#	:if ($1 ~ "[^0-9a-zA-Z_-]+" = false) do { return ($1) }
+
+	:local myResult;
+	:for i from=0 to=([:len $1]-1) do={
+		:local tmp [:pick $1 $i];
+		:if ($tmp ~"[0-9a-zA-Z_-]" = false) do={
+			:log debug ("Found '$tmp' in '$1'");
+		} else {
+			:set myResult "$myResult$tmp";
+		}
+	}
+	:log debug ("'$1' => '$myResult'");
+	:return ($myResult);
+}
 
 # Set the TTL to the scheduler frequency for this script.
 :local ttl "00:05:00"
 
 # Clear old static DNS entries matching the zone and TTL.
 /ip dns static
-:foreach dnsrecord in=[find where name ~ (".*\\.".$zone) ] do={
+# :foreach dnsrecord in=[find where name ~ (".*\\.".$zone) ] do={
+:foreach dnsrecord in=[find where comment=$cmnt] do={
 	:local fqdn [ get $dnsrecord name ]
 	:local hostname [ :pick $fqdn 0 ( [ :len $fqdn ] - ( [ :len $zone ] + 1 ) ) ]
 	:local recordttl [get $dnsrecord ttl]
+
+	:local addr [ get $dnsrecord address ]
+
 	:if ( $recordttl != $ttl ) do={
 		:log debug ("Ignoring DNS record $fqdn with TTL $recordttl")
 	} else={
@@ -24,17 +48,26 @@
 		:if ( [ :len $dhcplease ] > 0) do={
 			:log debug ("DHCP lease exists for $hostname in $dhcpserver, keeping DNS record $fqdn")
 		} else={
-			:log info ("DHCP lease expired for $hostname, deleting DNS record $fqdn")
-			/ip dns static remove $dnsrecord
+			:set dhcplease [ find where address=$addr and server="$dhcpserver"]
+			:local leasehostname [ get $dhcplease host-name ]
+			:set leasehostname [ $myStrip $leasehostname ]
+			:if ( ( [ :len $dhcplease ] > 0 ) and ( $leasehostname = $hostname )) do={
+				:log debug ("DHCP lease exists for converted $hostname in $dhcpserver, keeping DNS record $fqdn")
+			} else {
+				:log info ("DHCP lease expired for $hostname, deleting DNS record $fqdn")
+				/ip dns static remove $dnsrecord
+			}
+
 		}
 	}
 }
 
 # Create or update static DNS entries from DHCP server leases.
 /ip dhcp-server lease
-:foreach dhcplease in=[find where server ~ ("$dhcpserver")] do={
+:foreach dhcplease in=[find where status="bound" server ~ ("$dhcpserver") ] do={
 	:local hostname [ get $dhcplease host-name ]
 	:if ( [ :len $hostname ] > 0) do={
+		:set hostname [$myStrip $hostname];
 		:local dhcpip [ get $dhcplease address ]
 		:local fqdn ( $hostname . "." . $zone )
 		/ip dns static
@@ -46,11 +79,11 @@
 			} else={
 				:log info ("Updating DNS record for $fqdn to $dhcpip")
 				/ip dns static remove $dnsrecord
-				/ip dns static add name=$fqdn address=$dhcpip ttl=$ttl
+				/ip dns static add name=$fqdn address=$dhcpip ttl=$ttl comment=$cmnt
 			}
 		} else={
 			:log info ("Creating DNS record for $fqdn to $dhcpip")
-			/ip dns static add name=$fqdn address=$dhcpip ttl=$ttl
+			/ip dns static add name=$fqdn address=$dhcpip ttl=$ttl comment=$cmnt
 		}
 	}
 }
